@@ -2,47 +2,71 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import json
-import numpy as np
 import os
+import statistics
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "q-vercel-latency.json"
+)
 
-with open(os.path.join(BASE_DIR, "q-vercel-latency.json"), "r") as f:
+with open(DATA_FILE, "r", encoding="utf-8") as f:
     data = json.load(f)
 
 
-class RequestBody(BaseModel):
+class AnalyticsRequest(BaseModel):
     regions: list[str]
     threshold_ms: float
 
 
 @app.post("/")
-def analytics(request: RequestBody):
+def analytics(request: AnalyticsRequest):
     results = []
 
     for region in request.regions:
-        rows = [r for r in data if r["region"] == region]
+        rows = [
+            row for row in data
+            if row["region"] == region
+        ]
 
-        latencies = [r["latency_ms"] for r in rows]
-        uptimes = [r["uptime_pct"] for r in rows]
+        latencies = sorted(
+            row["latency_ms"] for row in rows
+        )
+
+        uptimes = [
+            row["uptime_pct"] for row in rows
+        ]
+
+        n = len(latencies)
+
+        # 95th percentile using linear interpolation
+        position = (n - 1) * 0.95
+        lower = int(position)
+        upper = min(lower + 1, n - 1)
+        fraction = position - lower
+
+        p95 = (
+            latencies[lower]
+            + fraction * (latencies[upper] - latencies[lower])
+        )
 
         results.append({
             "region": region,
-            "avg_latency": float(np.mean(latencies)),
-            "p95_latency": float(np.percentile(latencies, 95)),
-            "avg_uptime": float(np.mean(uptimes)),
+            "avg_latency": statistics.mean(latencies),
+            "p95_latency": p95,
+            "avg_uptime": statistics.mean(uptimes),
             "breaches": sum(
-                x > request.threshold_ms for x in latencies
+                latency > request.threshold_ms
+                for latency in latencies
             )
         })
 
